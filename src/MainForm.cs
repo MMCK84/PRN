@@ -17,13 +17,15 @@ namespace BilderUmbenenner
         private readonly ListView list;
         private readonly Button btnRename, btnRemove, btnClear, btnUndo, btnAdd;
         private readonly Label lblHint, lblStatus;
+        private readonly CheckBox chkExif;
+        private Font boldFont;
 
         public MainForm()
         {
             Text = "Bilder-Umbenenner  (yyyymmdd_hhmm)";
-            Width = 1000;
+            Width = 1150;
             Height = 600;
-            MinimumSize = new Size(700, 400);
+            MinimumSize = new Size(800, 400);
             StartPosition = FormStartPosition.CenterScreen;
             AllowDrop = true;
             Font = new Font("Segoe UI", 9F);
@@ -33,7 +35,7 @@ namespace BilderUmbenenner
                 Dock = DockStyle.Top,
                 Height = 40,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Text = "Bilder oder Ordner hierher ziehen. Neuer Name = Erstell- oder Änderungsdatum (das frühere), Format yyyymmdd_hhmm.",
+                Text = "Bilder oder Ordner hierher ziehen. Neuer Name = EXIF-Aufnahmedatum, sonst Erstell- oder Änderungsdatum (das frühere). Format yyyymmdd_hhmm.",
                 BackColor = Color.FromArgb(235, 242, 250)
             };
 
@@ -49,6 +51,7 @@ namespace BilderUmbenenner
             list.Columns.Add("Aktueller Name", 230);
             list.Columns.Add("Erstellt", 150);
             list.Columns.Add("Geändert", 150);
+            list.Columns.Add("EXIF-Aufnahme", 150);
             list.Columns.Add("Neuer Name", 190);
             list.Columns.Add("Status", 120);
             list.Columns.Add("Ordner", 300);
@@ -56,7 +59,8 @@ namespace BilderUmbenenner
             var buttons = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 44,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Padding = new Padding(6),
                 FlowDirection = FlowDirection.LeftToRight
             };
@@ -66,7 +70,15 @@ namespace BilderUmbenenner
             btnUndo = MakeButton("Rückgängig", DoUndo);
             btnRemove = MakeButton("Auswahl entfernen", RemoveSelected);
             btnClear = MakeButton("Liste leeren", ClearList);
-            buttons.Controls.AddRange(new Control[] { btnAdd, btnRename, btnUndo, btnRemove, btnClear });
+            chkExif = new CheckBox
+            {
+                Text = "EXIF-Aufnahmedatum verwenden (falls vorhanden)",
+                Checked = RenameItem.UseExif,
+                AutoSize = true,
+                Margin = new Padding(16, 8, 3, 3)
+            };
+            chkExif.CheckedChanged += (s, e) => { RenameItem.UseExif = chkExif.Checked; RefreshList(); };
+            buttons.Controls.AddRange(new Control[] { btnAdd, btnRename, btnUndo, btnRemove, btnClear, chkExif });
 
             lblStatus = new Label { Dock = DockStyle.Bottom, Height = 22, Padding = new Padding(6, 3, 0, 0) };
 
@@ -151,22 +163,24 @@ namespace BilderUmbenenner
         private void RefreshList()
         {
             RenameEngine.ComputeNewNames(items);
+            if (boldFont == null) boldFont = new Font(list.Font, FontStyle.Bold);
             list.BeginUpdate();
             list.Items.Clear();
-            foreach (var it in items.OrderBy(i => Path.GetDirectoryName(i.CurrentPath)).ThenBy(i => i.EarliestDate))
+            foreach (var it in items.OrderBy(i => Path.GetDirectoryName(i.CurrentPath)).ThenBy(i => i.NameDate))
             {
                 var lvi = new ListViewItem(Path.GetFileName(it.CurrentPath)) { Tag = it };
                 lvi.SubItems.Add(it.Created.ToString(DateDisplay));
                 lvi.SubItems.Add(it.Modified.ToString(DateDisplay));
+                lvi.SubItems.Add(it.ExifDate.HasValue ? it.ExifDate.Value.ToString(DateDisplay) : "–");
                 lvi.SubItems.Add(it.NewName);
                 lvi.SubItems.Add(it.Status);
                 lvi.SubItems.Add(Path.GetDirectoryName(it.CurrentPath));
                 // highlight the date that is used for the new name
                 lvi.UseItemStyleForSubItems = false;
-                var used = it.Created <= it.Modified ? lvi.SubItems[1] : lvi.SubItems[2];
-                used.Font = new Font(list.Font, FontStyle.Bold);
-                if (it.Status.StartsWith("Fehler")) lvi.SubItems[4].ForeColor = Color.Red;
-                else if (it.Status == "OK") lvi.SubItems[4].ForeColor = Color.Green;
+                var used = it.UsesExif ? lvi.SubItems[3] : it.Created <= it.Modified ? lvi.SubItems[1] : lvi.SubItems[2];
+                used.Font = boldFont;
+                if (it.Status.StartsWith("Fehler")) lvi.SubItems[5].ForeColor = Color.Red;
+                else if (it.Status == "OK") lvi.SubItems[5].ForeColor = Color.Green;
                 list.Items.Add(lvi);
             }
             list.EndUpdate();
@@ -176,7 +190,8 @@ namespace BilderUmbenenner
         private void UpdateUi()
         {
             int toRename = items.Count(i => i.NewName != null && !string.Equals(Path.GetFileName(i.CurrentPath), i.NewName, StringComparison.Ordinal));
-            lblStatus.Text = items.Count + " Bild(er) in der Liste, " + toRename + " werden umbenannt.";
+            int exif = items.Count(i => i.ExifDate.HasValue);
+            lblStatus.Text = items.Count + " Bild(er) in der Liste (" + exif + " mit EXIF-Datum), " + toRename + " werden umbenannt.";
             btnRename.Enabled = toRename > 0;
             btnUndo.Enabled = lastRenames != null && lastRenames.Count > 0;
             btnRemove.Enabled = items.Count > 0;
@@ -206,11 +221,7 @@ namespace BilderUmbenenner
             // re-read dates in case files changed since they were added
             foreach (var it in items)
             {
-                try
-                {
-                    var fi = new FileInfo(it.CurrentPath);
-                    if (fi.Exists) { it.Created = fi.CreationTime; it.Modified = fi.LastWriteTime; }
-                }
+                try { if (File.Exists(it.CurrentPath)) it.Reload(); }
                 catch { }
                 it.Status = "";
             }

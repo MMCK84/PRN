@@ -11,24 +11,45 @@ namespace BilderUmbenenner
         public string CurrentPath;
         public DateTime Created;
         public DateTime Modified;
+        public DateTime? ExifDate;
         public string NewName;
         public string Status = "";
 
-        public DateTime EarliestDate
+        /// <summary>Use the EXIF capture date (if present) instead of the file dates.</summary>
+        public static bool UseExif = true;
+
+        public bool UsesExif
         {
-            get { return Created < Modified ? Created : Modified; }
+            get { return UseExif && ExifDate.HasValue; }
+        }
+
+        /// <summary>
+        /// Date used for the new name: the EXIF capture date if enabled and present,
+        /// otherwise the earlier of creation and modification date.
+        /// </summary>
+        public DateTime NameDate
+        {
+            get
+            {
+                if (UsesExif) return ExifDate.Value;
+                return Created < Modified ? Created : Modified;
+            }
         }
 
         public static RenameItem FromFile(string path)
         {
-            var info = new FileInfo(path);
-            return new RenameItem
-            {
-                OriginalPath = info.FullName,
-                CurrentPath = info.FullName,
-                Created = info.CreationTime,
-                Modified = info.LastWriteTime
-            };
+            var item = new RenameItem { OriginalPath = Path.GetFullPath(path), CurrentPath = Path.GetFullPath(path) };
+            item.Reload();
+            return item;
+        }
+
+        /// <summary>Re-reads file dates and EXIF capture date from disk.</summary>
+        public void Reload()
+        {
+            var info = new FileInfo(CurrentPath);
+            Created = info.CreationTime;
+            Modified = info.LastWriteTime;
+            ExifDate = ExifReader.ReadCaptureDate(CurrentPath);
         }
     }
 
@@ -69,9 +90,9 @@ namespace BilderUmbenenner
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
 
-                foreach (var item in group.OrderBy(i => i.EarliestDate).ThenBy(i => i.CurrentPath, StringComparer.OrdinalIgnoreCase))
+                foreach (var item in group.OrderBy(i => i.NameDate).ThenBy(i => i.CurrentPath, StringComparer.OrdinalIgnoreCase))
                 {
-                    string baseName = item.EarliestDate.ToString(DateFormat);
+                    string baseName = item.NameDate.ToString(DateFormat);
                     string ext = Path.GetExtension(item.CurrentPath);
                     string candidate = baseName + ext;
                     int n = 1;
